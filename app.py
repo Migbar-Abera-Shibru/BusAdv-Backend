@@ -16,6 +16,7 @@ from langchain_community.utilities import SQLDatabase
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from langchain_groq import ChatGroq
+from upload_handler import handle_file_upload, summarize_document, search_documents
 
 # Load environment variables
 load_dotenv()
@@ -53,12 +54,13 @@ def get_sql_chain(db):
         
         Write only the SQL query and nothing else. Do not wrap the SQL query in any other text, not even backticks.
         Do not escape special characters like asterisks (*) in SQL queries.
+        Ensure that the query checks for existing data to avoid duplicates.
         
         For example:
-        Question: How many notifications are there for user Migbar?
-        SQL Query: SELECT COUNT(*) FROM notifications WHERE UserID = (SELECT UserID FROM users WHERE Username = 'Migbar');
-        Question: Show me all notifications for user Migbar.
-        SQL Query: SELECT * FROM notifications WHERE UserID = (SELECT UserID FROM users WHERE Username = 'Migbar');
+        Question: How many rows are in the advice table?
+        SQL Query: SELECT COUNT(*) FROM advice;
+        Question: Add advice for user Meron.
+        SQL Query: INSERT INTO advice (UserID, Context, AdviceText, CreatedAt) SELECT UserID, 'print results', 'print your results', NOW() FROM users WHERE Username = 'Meron' AND NOT EXISTS (SELECT 1 FROM advice WHERE UserID = (SELECT UserID FROM users WHERE Username = 'Meron') AND Context = 'print results' AND AdviceText = 'print your results');
         
         Your turn:
         
@@ -79,35 +81,6 @@ def get_sql_chain(db):
         | llm
         | StrOutputParser()
     )
-
-
-
-def validate_sql_query(sql_query):
-    # Basic validation to ensure the query starts with SELECT, INSERT, UPDATE, or DELETE
-    if not re.match(r"^\s*(SELECT|INSERT|UPDATE|DELETE)", sql_query, re.IGNORECASE):
-        raise ValueError("Invalid SQL query. Only SELECT, INSERT, UPDATE, or DELETE queries are allowed.")
-    
-    # Check for escaped asterisks in SQL queries
-    if "\\*" in sql_query:
-        raise ValueError("Invalid SQL query. Do not escape asterisks in SQL queries.")
-    
-    return sql_query
-
-def execute_sql_query(sql_query):
-    db = SessionLocal()
-    try:
-        # Validate the SQL query
-        sql_query = validate_sql_query(sql_query)
-        
-        # Execute the query
-        result = db.execute(text(sql_query)).fetchall()
-        return result
-    except Exception as e:
-        print(f"Error executing SQL query: {e}")
-        return None
-    finally:
-        db.close()
-
 
 def get_response(user_query: str, db: SQLDatabase, chat_history: list):
     sql_chain = get_sql_chain(db)
@@ -156,7 +129,6 @@ def get_response(user_query: str, db: SQLDatabase, chat_history: list):
         print(f"Error: {e}")
         return "Sorry, I couldn't process your request. Please try again."
 
-        
 # Function to determine if the prompt is database-related
 def is_database_related(prompt):
     database_keywords = [
@@ -181,15 +153,32 @@ def is_database_related(prompt):
     
     return False
 
+# Function to determine if the prompt is vector database-related
+def is_vector_database_related(prompt):
+    vector_keywords = [
+        "vector", "pinecone", "search", "document", "summarize", "upload", "file", "pdf"
+    ]
+    
+    if any(keyword in prompt.lower() for keyword in vector_keywords):
+        return True
+    
+    return False
+
 # Function to process messages and interact with the database
 def process_message(user_message):
     try:
         db = init_database()
         chat_history = []  # You can maintain chat history in session or database
         
+        # Debug: Log the user message
+        print(f"User message: {user_message}")
+
         if is_database_related(user_message):
-            print("Database-related prompt detected.")  # Debug log
+            print("MySQL database-related prompt detected.")  # Debug log
             response_text = get_response(user_message, db, chat_history)
+        elif is_vector_database_related(user_message):
+            print("Vector database-related prompt detected.")  # Debug log
+            response_text = handle_vector_database_prompt(user_message)
         else:
             print("General prompt detected.")  # Debug log
             response = client.chat.completions.create(
@@ -204,8 +193,26 @@ def process_message(user_message):
         return response_text
 
     except Exception as e:
+        print(f"Error in process_message: {e}")  # Debug log
         return f"Error: {str(e)}"
-
+        
+def handle_vector_database_prompt(prompt):
+    if "summarize" in prompt.lower():
+        # Extract the document name or ID from the prompt
+        # For example: "Summarize the document with ID 123"
+        # This is a placeholder; you'll need to implement the logic to extract the document ID or name.
+        document_id = "example_document_id"
+        summary = summarize_document(document_id)
+        return summary
+    elif "search" in prompt.lower():
+        # Extract the search query from the prompt
+        # For example: "Search for documents about business plans"
+        query = prompt.replace("search", "").strip()
+        results = search_documents(query)
+        return results
+    else:
+        return "Sorry, I couldn't process your request. Please try again."
+    
 @app.route("/api/chat", methods=["POST"])
 def chat():
     user_message = request.json.get("message")
@@ -213,12 +220,51 @@ def chat():
         return jsonify({"error": "No message provided"}), 400
 
     try:
+        print(f"Received message: {user_message}")  # Debug log
         response_text = process_message(user_message)
         return jsonify({"response": response_text})
-
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error in /api/chat: {e}")  # Debug log
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/upload", methods=["POST"])
+def upload():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+
+    file = request.files['file']
+    prompt = request.form.get("prompt", "")  # Extract the prompt from the form data
+
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+
+    try:
+        # Pass both the file and prompt to handle_file_upload
+        result = handle_file_upload(file, prompt)
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in upload endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+    
+@app.route("/api/summarize", methods=["POST"])
+def summarize():
+    data = request.json
+    filename = data.get("filename")
+    if not filename:
+        return jsonify({"error": "No filename provided"}), 400
+
+    summary = summarize_document(filename)
+    return jsonify({"summary": summary})
+
+@app.route("/api/search", methods=["POST"])
+def search():
+    data = request.json
+    query = data.get("query")
+    if not query:
+        return jsonify({"error": "No query provided"}), 400
+
+    results = search_documents(query)
+    return jsonify({"results": results})
 
 if __name__ == "__main__":
     app.run(debug=True)
