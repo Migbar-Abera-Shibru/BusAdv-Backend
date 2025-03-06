@@ -1,20 +1,19 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
+from google_calendar import init_google_calendar
 from openai import AzureOpenAI
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import SessionLocal, engine
-from models import User, Advice  # Ensure models are imported
+from models import User, Advice
 import os
 from dotenv import load_dotenv
-from flask_cors import CORS
-import datetime
-import re  # For regex-based intent detection and SQL generation
+import re
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_community.utilities import SQLDatabase
 from langchain_core.output_parsers import StrOutputParser
-from langchain_openai import ChatOpenAI
 from langchain_groq import ChatGroq
 from upload_handler import handle_file_upload, summarize_document, search_documents
 
@@ -26,7 +25,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Ensure database tables are created
-from models import Base  # Import Base from models
+from models import Base
 Base.metadata.create_all(bind=engine)
 
 # Initialize Azure OpenAI client
@@ -37,6 +36,9 @@ client = AzureOpenAI(
 )
 
 deployment_name = os.getenv("DEPLOYMENT_NAME")
+
+# Initialize Google Calendar routes
+init_google_calendar(app)
 
 # Initialize LangChain components
 def init_database():
@@ -86,7 +88,7 @@ def get_response(user_query: str, db: SQLDatabase, chat_history: list):
     sql_chain = get_sql_chain(db)
     
     template = """
-        You are a data analyst at a company. You are interacting with a user who is asking you questions about the company's database.
+        You are a business advisor AI. Your role is to assist users by answering questions about their business data stored in a MySQL database.
         Based on the table schema below, question, sql query, and sql response, write a natural language response.
         <SCHEMA>{schema}</SCHEMA>
 
@@ -170,9 +172,6 @@ def process_message(user_message):
         db = init_database()
         chat_history = []  # You can maintain chat history in session or database
         
-        # Debug: Log the user message
-        print(f"User message: {user_message}")
-
         if is_database_related(user_message):
             print("MySQL database-related prompt detected.")  # Debug log
             response_text = get_response(user_message, db, chat_history)
@@ -193,9 +192,8 @@ def process_message(user_message):
         return response_text
 
     except Exception as e:
-        print(f"Error in process_message: {e}")  # Debug log
         return f"Error: {str(e)}"
-        
+    
 def handle_vector_database_prompt(prompt):
     if "summarize" in prompt.lower():
         # Extract the document name or ID from the prompt
@@ -223,8 +221,9 @@ def chat():
         print(f"Received message: {user_message}")  # Debug log
         response_text = process_message(user_message)
         return jsonify({"response": response_text})
+
     except Exception as e:
-        print(f"Error in /api/chat: {e}")  # Debug log
+        print(f"Error: {e}")  # Debug log
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/upload", methods=["POST"])
@@ -233,19 +232,12 @@ def upload():
         return jsonify({"error": "No file part"}), 400
 
     file = request.files['file']
-    prompt = request.form.get("prompt", "")  # Extract the prompt from the form data
-
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
 
-    try:
-        # Pass both the file and prompt to handle_file_upload
-        result = handle_file_upload(file, prompt)
-        return jsonify(result)
-    except Exception as e:
-        print(f"Error in upload endpoint: {e}")
-        return jsonify({"error": str(e)}), 500
-    
+    result = handle_file_upload(file)
+    return jsonify(result)
+
 @app.route("/api/summarize", methods=["POST"])
 def summarize():
     data = request.json
@@ -267,4 +259,8 @@ def search():
     return jsonify({"results": results})
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Allow HTTP for local testing (remove in production)
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+
+    # Run the Flask app
+    app.run(port=5000)

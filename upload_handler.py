@@ -127,7 +127,7 @@ def search_documents(query):
         # Query Pinecone
         query_result = index.query(
             vector=query_vector,
-            top_k=5,
+            top_k=5,  # Retrieve the top 5 most relevant documents
             include_metadata=True
         )
 
@@ -137,8 +137,14 @@ def search_documents(query):
         # Extract relevant text from the results
         results = []
         for match in query_result.matches:
-            results.append(match.metadata.get("text", ""))
+            document_text = match.metadata.get("text", "")
+            results.append({
+                "id": match.id,
+                "score": match.score,
+                "text": document_text[:500]  # Return the first 500 characters of the document
+            })
 
         return results
     except Exception as e:
+        print(f"Error searching documents: {e}")
         return f"Error searching documents: {str(e)}"
