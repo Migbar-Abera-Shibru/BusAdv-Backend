@@ -14,7 +14,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_community.utilities import SQLDatabase
 from langchain_core.output_parsers import StrOutputParser
-from langchain_groq import ChatGroq
+# from langchain_groq import ChatGroq
 from upload_handler import handle_file_upload, summarize_document, search_documents
 
 # Load environment variables
